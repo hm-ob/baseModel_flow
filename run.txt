@@ -1,0 +1,4 @@
+docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --name memoCMT -v /home/manamihoshi/baseModel_flow:/workspace/mount -it pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
+
+
+python eval.py -ckpt ./working/checkpoints/MSP-Podcast/MemoCMT_bert_hubert_base/(20251031-060710) --output_csv results.csv --plot
