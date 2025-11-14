@@ -29,7 +29,7 @@ class BaseDataset(Dataset):
         with open(os.path.join(cfg.data_root, data_mode), "rb") as train_file:
             self.data_list = pickle.load(train_file)
 
-        if cfg.text_encoder_type == "bert":
+        if cfg.text_encoder_type in ("bert", "bert-flow"):
             self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
         else:
             raise NotImplementedError("Tokenizer {} is not implemented".format(cfg.text_encoder_type))
@@ -68,13 +68,27 @@ class BaseDataset(Dataset):
                 )
                 self.list_encode_audio_data.append(audio_embedding)
 
-                input_ids = self.__ptext__(text)
-                text_embedding = (
-                    encoder.encode_text(input_ids.unsqueeze(0).to(device))
-                    .squeeze(0)
-                    .detach()
-                    .cpu()
-                )
+                # __ptext__ now returns (input_ids, attention_mask)
+                input_ids, attention_mask = self.__ptext__(text)
+                # prepare batch dim
+                input_ids_b = input_ids.unsqueeze(0).to(device)
+                attention_mask_b = attention_mask.unsqueeze(0).to(device)
+                # encoder.encode_text should accept (input_ids, attention_mask) or input_ids only
+                try:
+                    text_embedding = (
+                        encoder.encode_text(input_ids_b, attention_mask_b)
+                        .squeeze(0)
+                        .detach()
+                        .cpu()
+                    )
+                except TypeError:
+                    # fallback: encoder.encode_text(input_ids)
+                    text_embedding = (
+                        encoder.encode_text(input_ids_b)
+                        .squeeze(0)
+                        .detach()
+                        .cpu()
+                    )
                 self.list_encode_text_data.append(text_embedding)
 
     def __getitem__(
@@ -132,17 +146,18 @@ class BaseDataset(Dataset):
 
     def __ptext__(self, text: str) -> torch.Tensor:
         text = self._text_preprocessing(text)
-        input_ids = self.tokenizer.encode(text, add_special_tokens=True)
-        if self.text_max_length is not None and len(input_ids) < self.text_max_length:
-            input_ids = np.pad(
-                input_ids,
-                (0, self.text_max_length - len(input_ids)),
-                "constant",
-                constant_values = self.tokenizer.pad_token_id,
-            )
-        elif self.text_max_length is not None:
-            input_ids = input_ids[: self.text_max_length]
-        return torch.from_numpy(np.asarray(input_ids))
+        # Return both input_ids and attention_mask so models that require masks (e.g., TransformerGlow)
+        tokenized = self.tokenizer.encode_plus(
+            text,
+            add_special_tokens=True,
+            max_length=self.text_max_length if self.text_max_length is not None else None,
+            padding="max_length" if self.text_max_length is not None else False,
+            truncation=True if self.text_max_length is not None else False,
+            return_attention_mask=True,
+        )
+        input_ids = np.asarray(tokenized["input_ids"], dtype=np.int64)
+        attention_mask = np.asarray(tokenized["attention_mask"], dtype=np.int64)
+        return torch.from_numpy(input_ids), torch.from_numpy(attention_mask)
     
     def __plabel__(self, label: Tuple) -> torch.Tensor:
         return torch.tensor(label)

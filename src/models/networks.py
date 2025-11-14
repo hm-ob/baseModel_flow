@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 from configs.base import Config
 from .modules import build_audio_encoder, build_text_encoder
+try:
+    from src.tflow_utils import TransformerGlow
+except Exception:
+    TransformerGlow = None
 
 class MemoCMT(nn.Module):
     def __init__(
@@ -14,8 +18,17 @@ class MemoCMT(nn.Module):
         self.text_encoder = build_text_encoder(cfg.text_encoder_type)
         self.text_encoder.to(device)
         # Freeze/Unfreeze the text module
-        for param in self.text_encoder.parameters():
-            param.requires_grad = cfg.text_unfreeze
+        # If using TransformerGlow, freeze its transformer and control glow params
+        if TransformerGlow is not None and isinstance(self.text_encoder, TransformerGlow):
+            # freeze transformer params
+            for param in self.text_encoder.transformer.parameters():
+                param.requires_grad = False
+            # control glow training via cfg.text_unfreeze
+            for param in self.text_encoder.glow.parameters():
+                param.requires_grad = cfg.text_unfreeze
+        else:
+            for param in self.text_encoder.parameters():
+                param.requires_grad = cfg.text_unfreeze
 
         # Audio module
         self.audio_encoder = build_audio_encoder(cfg)
@@ -74,8 +87,36 @@ class MemoCMT(nn.Module):
         input_audio: torch.Tensor,
         output_attentions: bool = False,
     ):
-        text_embeddings = self.text_encoder(input_text).last_hidden_state.mean(dim=1)
-        text_embeddings = text_embeddings.unsqueeze(1)
+        # input_text can be either:
+        # - tensor of input_ids (old behaviour, no attention mask)
+        # - tuple (input_ids, attention_mask)
+        if isinstance(input_text, (tuple, list)):
+            input_ids, attention_mask = input_text
+        else:
+            input_ids = input_text
+            attention_mask = None
+
+        # For BERT model, call and compute mean over tokens
+        if TransformerGlow is not None and isinstance(self.text_encoder, TransformerGlow):
+            # TransformerGlow expects input_ids and attention_mask
+            if attention_mask is None:
+                # create attention mask (assume non-zero tokens are real)
+                attention_mask = (input_ids != 0).long()
+            # text_encoder returns z (bsz, dim) or (z, loss)
+            out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask, return_loss=False)
+            if isinstance(out, tuple):
+                text_z = out[0]
+            else:
+                text_z = out
+            text_embeddings = text_z.unsqueeze(1)  # (bsz, 1, dim)
+        else:
+            hidden = self.text_encoder(input_ids)
+            # hidden can be a ModelOutput with last_hidden_state
+            if hasattr(hidden, "last_hidden_state"):
+                text_embeddings = hidden.last_hidden_state.mean(dim=1).unsqueeze(1)
+            else:
+                # fallback: assume tensor
+                text_embeddings = hidden.mean(dim=1).unsqueeze(1)
         if len(input_audio.size()) != 2: # データが長い場合
             batch_size, num_samples = input_audio.seze(0), input_audio.size(1)
             audio_embeddings = self.audio_encoder(
@@ -149,4 +190,21 @@ class MemoCMT(nn.Module):
         return self.audio_encoder(audio)
 
     def encode_text(self, input_ids: torch.Tensor):
-        return self.text_encoder(input_ids).last_hidden_state
+        # Keep compatibility: accept either input_ids tensor or tuple (input_ids, attention_mask)
+        if isinstance(input_ids, (tuple, list)):
+            input_ids, attention_mask = input_ids
+        else:
+            attention_mask = None
+
+        if TransformerGlow is not None and isinstance(self.text_encoder, TransformerGlow):
+            if attention_mask is None:
+                attention_mask = (input_ids != 0).long()
+            out = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask, return_loss=False)
+            if isinstance(out, tuple):
+                return out[0]
+            return out
+        else:
+            hidden = self.text_encoder(input_ids)
+            if hasattr(hidden, "last_hidden_state"):
+                return hidden.last_hidden_state
+            return hidden

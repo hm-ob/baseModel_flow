@@ -45,7 +45,11 @@ class Trainer(TorchTrainer):
         # ラベルの正規化
         label = (label - 1) / 6
         label = label.to(self.device)
-        input_text = input_text.to(self.device)
+        # input_text can be a tensor or a tuple (input_ids, attention_mask)
+        if isinstance(input_text, (list, tuple)):
+            input_text = tuple(x.to(self.device) for x in input_text)
+        else:
+            input_text = input_text.to(self.device)
 
         # Forward pass
         output = self.network(input_text, input_audio)
@@ -88,7 +92,10 @@ class Trainer(TorchTrainer):
         input_audio = input_audio.to(self.device)
         label = (label-1) / 6
         label = label.to(self.device)
-        input_text = input_text.to(self.device)
+        if isinstance(input_text, (list, tuple)):
+            input_text = tuple(x.to(self.device) for x in input_text)
+        else:
+            input_text = input_text.to(self.device)
         with torch.no_grad():
             # Forward pass
             output = self.network(input_text, input_audio)

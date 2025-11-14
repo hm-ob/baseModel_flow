@@ -3,12 +3,29 @@ import torch.nn as nn
 import torchaudio
 from transformers import BertConfig, BertModel
 from configs.base import Config
+from typing import Optional
+try:
+    from src.tflow_utils import TransformerGlow
+except Exception:
+    TransformerGlow = None
 
 # Text Encoder
 def build_bert_encoder() -> nn.Module:
     config = BertConfig.from_pretrained("bert-base-uncased", output_hidden_states=True, output_attentions=True)
     bert = BertModel.from_pretrained("bert-base-uncased", config=config)
     return bert
+
+
+def build_bert_flow_encoder(pooling: Optional[str] = "cls") -> nn.Module:
+    """Build a TransformerGlow (BERT + Glow) text encoder.
+
+    This requires `scripts/tflow_utils.py` to be importable. If it's not
+    available, raise an informative error.
+    """
+    if TransformerGlow is None:
+        raise RuntimeError("TransformerGlow not available. Ensure scripts/tflow_utils.py is importable.")
+    # Use bert-base-uncased by default and pooling method
+    return TransformerGlow(model_name_or_path="bert-base-uncased", pooling=pooling)
 
 # Audio Encoder
 class HubertBase(nn.Module):
@@ -42,6 +59,7 @@ def build_text_encoder(type: str = "bert") -> nn.Module:
     # Returns: torch.nn.Module: Text encoder
     encoders = {
         "bert": build_bert_encoder
+        , "bert-flow": build_bert_flow_encoder
     }
     assert type in encoders.keys(), f"Invalid text encoder type: {type}"
     return encoders[type]()
